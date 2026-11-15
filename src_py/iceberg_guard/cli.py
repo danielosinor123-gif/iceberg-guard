@@ -16,7 +16,6 @@ from pyiceberg.catalog import load_catalog
 
 from . import __version__, fixture
 from .engine_adapter import EngineError, connect, run_query, result_md5
-from .metadata_adapter import layout_summary
 from .workload import ManifestError, load_manifest, Manifest
 from .report import record as append_record
 
@@ -70,8 +69,11 @@ def cmd_generate(args) -> int:
 
 
 def cmd_inspect(args) -> int:
+    from . import signals
     for table in ("events_many_small", "events_sorted_compact"):
-        print(layout_summary(args.warehouse, table))
+        sig = signals.layout_signals(args.warehouse, table)
+        ovl = signals.predicate_overlap(signals.all_files(args.warehouse, table), "category", "growth")
+        print({**sig, "category_eq_growth_overlap": ovl})
     return 0
 
 
@@ -141,6 +143,111 @@ def cmd_benchmark(args) -> int:
     return 0
 
 
+def _latest_records(run_dir: Path):
+    import json
+    runs = sorted(run_dir.rglob("*.jsonl"))
+    if not runs:
+        return None, {}
+    latest = runs[-1]
+    data = {"events_many_small": [], "events_sorted_compact": []}
+    env = {}
+    with latest.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = json.loads(line)
+            env = rec.get("env", env)
+            for layout in rec.get("results", []):
+                data.setdefault(layout["layout"], []).extend(layout.get("results", []))
+    return (latest, env, data)
+
+
+def cmd_report(args) -> int:
+    import json
+    from . import signals
+    from .compare import compare_results
+
+    found = _latest_records(Path(args.run_dir))
+    if not found[0]:
+        print("no run records under", args.run_dir, "— run `benchmark` first")
+        return 1
+    latest, env, data = found
+
+    base_md5s = {}
+    cand_md5s = {}
+    base_p50 = {}
+    cand_p50 = {}
+    for r in data.get("events_many_small", []):
+        if r.get("status") == "ok":
+            base_md5s.setdefault(r["query_id"], []).append(r["md5"])
+            base_p50.setdefault(r["query_id"], []).append(r["p50_ms"])
+    for r in data.get("events_sorted_compact", []):
+        if r.get("status") == "ok":
+            cand_md5s.setdefault(r["query_id"], []).append(r["md5"])
+            cand_p50.setdefault(r["query_id"], []).append(r["p50_ms"])
+    verdict = compare_results(base_md5s, cand_md5s)
+
+    sig = {t: signals.layout_signals(args.warehouse, t) for t in ("events_many_small", "events_sorted_compact")}
+    ovl = {t: signals.predicate_overlap(signals.all_files(args.warehouse, t), "category", args.overlap_value)
+           for t in sig}
+
+    def row(label, vals):
+        return "| " + label + " | " + " | ".join(str(v) for v in vals) + " |"
+
+    lines = []
+    lines.append("# Sample run record — spike-basic (auto-generated)")
+    lines.append("")
+    lines.append(f"Generated: {latest.name} · workload: {args.manifest}")
+    if env:
+        lines.append(f"Host: {env.get('host')} · python {env.get('python')} · iceberg-guard {env.get('iceberg_guard')} · git {env.get('git')}")
+        lines.append("Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitations.md)")
+    lines.append("")
+    lines.append("## Layout signals (measured on the filesystem — provenance: measured_filesystem)")
+    lines.append("")
+    lines.append(row("signal", ["events_many_small", "events_sorted_compact"]))
+    lines.append(row("---", ["---", "---"]))
+    for key in ("files", "rows", "bytes_total", "mean_file_bytes", "size_cv", "many_small_files", "ts_min", "ts_max"):
+        lines.append(row(key, [sig["events_many_small"].get(key), sig["events_sorted_compact"].get(key)]))
+    lines.append("")
+    lines.append(f"## Predicate prune signal — `category = '{args.overlap_value}'` (equality, containment semantics)")
+    lines.append("")
+    lines.append(row("fraction of files whose [min,max] contains the literal", [f"{ovl['events_many_small']}", f"{ovl['events_sorted_compact']}"]))
+    lines.append("")
+    lines.append("> **Signal ≠ cause.** A lower overlap means better nominal pruning for this equality predicate. It yields no performance guarantee, and neither value is a verdict.")
+    lines.append("")
+    lines.append("## Result comparison (correctness gate — digests per query × repetition)")
+    lines.append("")
+    lines.append(row("query", ["baseline digests", "candidate digests", "match"]))
+    lines.append(row("---", ["---", "---", "---"]))
+    for qid, ok, detail in zip(verdict["queries"]["query_id"], verdict["queries"]["match"], verdict["queries"]["detail"]):
+        b = ", ".join(x[:8] for x in detail["baseline"]) or "—"
+        c = ", ".join(x[:8] for x in detail["candidate"]) or "—"
+        lines.append(row(qid, [b, c, "✅" if ok else "❌"]))
+    lines.append(f"")
+    lines.append(f"**rowset_match: {verdict['rowset_match']}** — all provenance in run records.")
+    lines.append("")
+    lines.append("## Indicative timing only (n small, no cache protocol — treat as signal, not benchmark)")
+    lines.append("")
+    lines.append(row("query", ["baseline p50 ms", "candidate p50 ms"]))
+    lines.append(row("---", ["---", "---"]))
+    for qid in sorted(set(base_p50) | set(cand_p50)):
+        b = f"{(sum(base_p50[qid]) / len(base_p50[qid])):.2f}" if qid in base_p50 else "—"
+        c = f"{(sum(cand_p50[qid]) / len(cand_p50[qid])):.2f}" if qid in cand_p50 else "—"
+        lines.append(row(qid, [b, c]))
+    lines.append("")
+    lines.append("`q_all_scan` is the **control**: it has no layout-relevant predicate, and any timing delta here is *not* labeled an improvement.")
+    lines.append("")
+    lines.append("## What this does NOT show")
+    lines.append("")
+    lines.append("- No benefit claim for any candidate. Three repetitions, local hardware, no cold-cache protocol.")
+    lines.append("- No Firebolt, production, capacity, or cost claim. DuckDB/PyIceberg local numbers for synthetic data stay local.")
+    lines.append("- No claim about partitioning or multi-query workloads; both need later milestones.")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"report written: {out}")
+    return 0 if verdict["rowset_match"] else 2
+
+
 def cmd_compare(args) -> int:
     from .compare import compare_results
     import json
@@ -189,6 +296,14 @@ def main(argv=None) -> int:
     sp = sub.add_parser("compare", help="verify result equivalence from the latest run records")
     sp.add_argument("--run-dir", default="runs")
     sp.set_defaults(fn=cmd_compare)
+
+    sp = sub.add_parser("report", help="render an auto-generated evidence report from the latest run records")
+    sp.add_argument("--run-dir", default="runs")
+    sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
+    sp.add_argument("--manifest", default="config/example-workload.yaml")
+    sp.add_argument("--overlap-value", default="growth")
+    sp.add_argument("--out", default="docs/results-example.md")
+    sp.set_defaults(fn=cmd_report)
 
     args = ap.parse_args(argv)
     try:

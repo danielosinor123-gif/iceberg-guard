@@ -8,11 +8,14 @@
 
 ## Status (2026-11-15)
 
-Milestone 1 build. Verified so far (see `docs/SPIKE_RESULT.md`):
+Milestone 2 in progress. Verified so far (see `docs/SPIKE_RESULT.md`, `docs/results-example.md`):
 
 - Deterministic synthetic fixture roundtrip through Iceberg (30 small files vs 4 sorted large files)
-- Exact rowset equivalence proven (identical MD5 of canonicalized tables)
+- Exact rowset equivalence proven (disclosed 1e-9 float digest normalization)
 - DuckDB reads the Iceberg tables; PyIceberg sqlite catalog works with no service
+- Layout signals computed from measured filesystem + Parquet footers; correctness gate passes; control case (`q_all_scan`) not labeled an improvement
+- Auto-generated evidence report: `docs/results-example.md` (regenerate with `iceberg-guard report`)
+- `docs/BUGS.md` tracks every defect found, with root cause + lesson
 
 ## Quickstart (target: Linux; works on Windows/WSL too)
 
