@@ -202,6 +202,9 @@ def cmd_rewrite(args) -> int:
     record = append_record(run_dir, out)
     print(json.dumps(out, indent=2))
     print("record:", record)
+    if not out["digest_match"]:
+        print("rewrite equivalence check FAILED — exit 2 (fail closed)")
+        return 2
     return 0
 
 

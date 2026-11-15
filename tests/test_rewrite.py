@@ -32,3 +32,19 @@ def test_compact_rewrite_keeps_order(tmp_path):
     assert rw[0]["digest_match"] is True
     assert rw[0]["output_files"] == 1
     assert rw[0]["sort_key"] is None
+
+
+def test_rewrite_fails_closed_on_digest_mismatch(tmp_path, monkeypatch):
+    wh = tmp_path / "warehouse"
+    assert main(["generate", "--rows", "200", "--seed", "9", "--warehouse", str(wh)]) == 0
+    calls = {"n": 0}
+    def fake_md5(*a, **k):
+        calls["n"] += 1
+        return "AAA" if calls["n"] == 1 else "BBB"
+    monkeypatch.setattr("iceberg_guard.cli.df_md5", fake_md5)
+    rc = main(["rewrite", "--warehouse", str(wh), "--target", "t_sabotaged",
+               "--mode", "sort", "--sort-key", "category", "--batches", "2",
+               "--run-dir", str(tmp_path / "runs")])
+    assert rc == 2   # fail closed — the digest check must stop the pipeline
+    rw = _rewrite_records(tmp_path / "runs")
+    assert rw[0]["digest_match"] is False

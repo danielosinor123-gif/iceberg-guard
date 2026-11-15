@@ -36,11 +36,15 @@ jobs:
           uv venv --python 3.12
           uv pip install -e .
       - name: full pipeline reproduces (fresh clone, no local state)
+        # Exit semantics: any non-zero command above (and below) stops this step.
+        # If rewrite returns non-zero — e.g. digest_match fails — the pipeline STOPS here and
+        # the gate step below never runs: the failure is loud, not silent.
         run: |
+          set -euo pipefail
           uv run --no-project --python .venv/bin/python -m iceberg_guard.cli generate
           uv run --no-project --python .venv/bin/python -m iceberg_guard.cli rewrite --mode sort --target events_intervention_sorted --batches 4
           uv run --no-project --python .venv/bin/python -m iceberg_guard.cli benchmark --baseline events_many_small --candidate events_intervention_sorted --layout both --manifest config/example-workload.yaml --repetitions 3
-      - name: correctness gate must pass
+      - name: correctness gate must pass (only reached if rewrite succeeded)
         run: uv run --no-project --python .venv/bin/python -m iceberg_guard.cli compare
 
   cpp:

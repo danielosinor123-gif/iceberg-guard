@@ -16,7 +16,7 @@ Milestones 0–4 in progress. Verified (see `docs/SPIKE_RESULT.md`, `docs/result
 - C++20 core (`src_cpp/`): `AggregateStats` streaming Welford aggregate, ASan+UBSan clean, Release build ~26M adds/s (machine-specific); Python cross-check to 1e-9 vs `statistics.pvariance`
 - Correctness gate is fail-closed against **manifest-expected units** (recorded `expected_units`): every expected unit must appear on both sides with status=ok, samples_recorded == repetitions, digest sets equal; a unit missing on both sides is a named failure, not a silent pass. `benchmark --baseline/--candidate` selects the operand pair; the committed example compares the intervention's actual output; rewrite records end-to-end timing (read+sort+write+verify)
 - Auto-generated report (`docs/results-example.md`); `docs/BUGS.md` is a standing defect log (10+ entries)
-- 20 unit tests passing (Linux: C++ cross-check tests included); no production/capacity/vendor claims anywhere
+- 31 unit tests passing (non-Linux; Linux runs add the 2 C++ cross-check tests); no production/capacity/vendor claims anywhere
 
 ## Verify this repo yourself (fresh clone, ~10 minutes)
 
@@ -26,7 +26,7 @@ Everything in this README and `docs/` is **maintainer-produced evidence, not ind
 git clone https://github.com/danielosinor123-gif/iceberg-guard && cd iceberg-guard
 uv venv --python 3.12 .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 uv pip install -e '.[dev]'
-python -m pytest -q                                     # expect: 25 passed, 2 skipped (Linux: 27 passed)
+python -m pytest -q                                     # expect: 31 passed, 2 skipped (Linux: 33 passed)
 python -m iceberg_guard.cli generate
 python -m iceberg_guard.cli rewrite --mode sort --target events_intervention_sorted --batches 4
 python -m iceberg_guard.cli benchmark --baseline events_many_small --candidate events_intervention_sorted --manifest config/example-workload.yaml --repetitions 10

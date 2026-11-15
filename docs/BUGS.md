@@ -23,6 +23,11 @@ Each entry: what broke, root cause, fix, severity. Newest at top.
 - WSL `/root` checkout tags: `WSL2 kernel missing ip_tables/iso9660 modules` (custom sched_ext kernel in `.wslconfig`) — outside this repo, resolved + documented: Docker Desktop + stock kernel.
 - `uv` and Harbor installed but PATH did not include `~/.local/bin` — always extend PATH inside WSL scripts.
 
+## BUG-2026-11-15-09 — Review findings #6/#7 (fail-closed rewrite + stale docs)
+**#6 — `cmd_rewrite` returned success despite a failed equivalence check.** The `digest_match` verdict was printed but never acted on, allowing automation to continue after proven-wrong rewrite output. **Fix:** rewrite now returns exit code 2 when `digest_match` is false (record is written for audit); the `repro` CI job runs with `set -euo pipefail` and an inline note — a non-zero rewrite step aborts that job and the correctness gate step beneath it never runs, so the failure is loud and cannot be "green-passed" by a downstream step. Regression test `test_rewrite_fails_closed_on_digest_mismatch` (sabotaged digest → exit 2).
+
+**#7 — README test count stale** (30, then 31). Bumped; the README verification section now states the current expectation explicitly.
+
 ## BUG-2026-11-15-08 — Review findings #4 and #5 (scope & time accounting)
 **#4 — Coverage checked only against recorded units, not the manifest's expected units.** If a (query, param_set) unit vanished from both layouts (e.g., crash before records), the gate never saw it. **Fix:** the benchmark now records `expected_units` (every manifest unit); `compare_records` takes them and requires their presence on both sides with full coverage + digest equality. Regression tests in `test_gate.py` (`test_expected_unit_absent_from_both_sides_fails` and neighbors).
 
