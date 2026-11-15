@@ -1,0 +1,12 @@
+seed: 20261115
+rows: 60000
+layouts:
+  - name: events_many_small
+    batches: 30
+    ordering: none
+  - name: events_sorted_compact
+    batches: 4
+    ordering: [category, ts]
+path: warehouse/
+catalog: sql
+uuid_note: "create_namespace('spike'); table ids honored by pyiceberg"

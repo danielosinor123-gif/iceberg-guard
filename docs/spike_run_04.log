@@ -1,0 +1,37 @@
+
+== ice2 run, seed=20261115, rows=60000 ==
+fixture head: [{'ts': 1700000000, 'category': 'growth', 'tenant': 'tenant-000', 'join_key': 22713, 'measure': 3.955202}, {'ts': 1700000017, 'category': 'growth', 'tenant': 'tenant-001', 'join_key': 7874, 'measure': 4.181206}, {'ts': 1700000034, 'category': 'core', 'tenant': 'tenant-002', 'join_key': 35285, 'measure': 21.536526}]
+category distribution: {'growth': 32701, 'core': 15035, 'legacy': 7367, 'experiment': 4897}
+
+== pyiceberg version ==
+pyiceberg 0.12.0
+
+== baseline: unsorted, 30 small files ==
+
+== candidate: sorted by (category, ts), 4 largish files ==
+
+== iceberg metadata evidence ==
+events_many_small: inspect_files failed (AttributeError: 'Table' object has no attribute 'inspect_files'); falling back to filesystem scan
+events_many_small: datafiles_on_disk=30 walk_path=/root/iceberg-guard-spike/warehouse/spike/events_many_small bytes_total=992775
+events_sorted_compact: inspect_files failed (AttributeError: 'Table' object has no attribute 'inspect_files'); falling back to filesystem scan
+events_sorted_compact: datafiles_on_disk=4 walk_path=/root/iceberg-guard-spike/warehouse/spike/events_sorted_compact bytes_total=1037806
+
+== correctness: read both tables, canonicalize, compare ==
+rows baseline= 60000 candidate= 60000
+baseline_md5= 37a1f8b34392ca5dce0bde79b9875fa7
+candidate_md5= 37a1f8b34392ca5dce0bde79b9875fa7
+ROWSET_MATCH: True
+
+== query evidence (pyiceberg filters; no timing claims) ==
+filtered_rows baseline= 13429 candidate= 13429 equal= True
+
+== duckdb iceberg probe (may fail; isolated) ==
+duckdb iceberg_scan count/sum: [(60000, 808814.745023)]
+
+== SPIKE RESULT ==
+{
+  "seed": 20261115,
+  "rows": 60000,
+  "rowset_match": true,
+  "ok": true
+}

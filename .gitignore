@@ -1,0 +1,11 @@
+# generated artifacts — never commit tables or run data
+warehouse/
+runs/
+.venv/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+*.egg-info/
+dist/
+.DS_Store

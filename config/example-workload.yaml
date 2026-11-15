@@ -1,0 +1,18 @@
+name: spike-basic
+queries:
+  - id: q_growth_agg
+    template: "SELECT category, count(*) AS c, sum(measure) AS s FROM t WHERE category = '{category}' AND ts > {ts_min} GROUP BY category ORDER BY category"
+    order_sensitive: true
+    weight: 1.0
+    param_sets:
+      - {category: growth, ts_min: 1700600000}
+      - {category: core, ts_min: 1700600000}
+  - id: q_all_scan
+    template: "SELECT count(*) AS c FROM t"
+    order_sensitive: false
+    weight: 0.2
+    param_sets:
+      - {}
+limits:
+  repetitions: 3
+  timeout_sec: 30
