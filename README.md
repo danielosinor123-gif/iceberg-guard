@@ -18,6 +18,26 @@ Milestones 0–4 in progress. Verified (see `docs/SPIKE_RESULT.md`, `docs/result
 - Auto-generated report (`docs/results-example.md`); `docs/BUGS.md` is a standing defect log (10+ entries)
 - 20 unit tests passing (Linux: C++ cross-check tests included); no production/capacity/vendor claims anywhere
 
+## Verify this repo yourself (fresh clone, ~10 minutes)
+
+Everything in this README and `docs/` is **maintainer-produced evidence, not independently verified by you**. Please rerun it:
+
+```bash
+git clone https://github.com/danielosinor123-gif/iceberg-guard && cd iceberg-guard
+uv venv --python 3.12 .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+uv pip install -e '.[dev]'
+python -m pytest -q                                     # expect: 25 passed, 2 skipped (Linux: 27 passed)
+python -m iceberg_guard.cli generate
+python -m iceberg_guard.cli rewrite --mode sort --target events_intervention_sorted --batches 4
+python -m iceberg_guard.cli benchmark --baseline events_many_small --candidate events_intervention_sorted --manifest config/example-workload.yaml --repetitions 10
+python -m iceberg_guard.cli compare                     # expect: rowset_match true
+python -m iceberg_guard.cli report --out /tmp/my-report.md
+```
+
+The `repro` CI job runs the same sequence on a clean ubuntu-latest on every push to `main` (as do unit tests and the sanitized C++ build). Numbers will differ from this machine's runs to the extent any machine differs — that's the point of reruns.
+
+**What this shows vs. what it does not:** this project passed its own checks *on this machine, from a pristine clone, right now*. It does not prove those checks exhaustive, nor that your rerun matches my timings, nor anything about production data.
+
 ## Quickstart (target: Linux; works on Windows/WSL too)
 
 ```bash

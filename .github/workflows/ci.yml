@@ -24,6 +24,25 @@ jobs:
       - name: tests
         run: uv run --no-project --with pytest --python .venv/bin/python pytest -q
 
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.7"
+      - name: install
+        run: |
+          uv venv --python 3.12
+          uv pip install -e .
+      - name: full pipeline reproduces (fresh clone, no local state)
+        run: |
+          uv run --no-project --python .venv/bin/python -m iceberg_guard.cli generate
+          uv run --no-project --python .venv/bin/python -m iceberg_guard.cli rewrite --mode sort --target events_intervention_sorted --batches 4
+          uv run --no-project --python .venv/bin/python -m iceberg_guard.cli benchmark --baseline events_many_small --candidate events_intervention_sorted --layout both --manifest config/example-workload.yaml --repetitions 3
+      - name: correctness gate must pass
+        run: uv run --no-project --python .venv/bin/python -m iceberg_guard.cli compare
+
   cpp:
     runs-on: ubuntu-latest
     steps:
