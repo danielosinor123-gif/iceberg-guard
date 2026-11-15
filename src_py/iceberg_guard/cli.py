@@ -118,7 +118,8 @@ def _finalize(acc):
             n = len(samples)
             digests = st["digests"]
             rec.update({"rowcount": st["rowcount"],
-                        "md5": digests[-1],
+                        "samples_recorded": n,
+                        "md5": digests[-1] if digests else None,
                         "unique_md5s": sorted(set(digests)),
                         "samples_ms": [round(s * 1000, 3) for s in samples],
                         "p50_ms": round(samples[n // 2] * 1000, 3),
@@ -197,14 +198,17 @@ def cmd_benchmark(args) -> int:
         manifest.repetitions = args.repetitions
     warehouse = Path(args.warehouse)
     run_dir = Path(args.run_dir) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    meta = {t: _meta_json(warehouse, t) for t in ("events_many_small", "events_sorted_compact")}
+    layouts = [args.baseline, args.candidate] if args.layout == "both" else [
+        {"baseline": args.baseline, "candidate": args.candidate}[args.layout]]
+    layouts = list(dict.fromkeys(layouts))  # dedupe while preserving order
+    meta = {t: _meta_json(warehouse, t) for t in layouts}
     con = connect()
     env = {"host": platform.platform(), "python": platform.python_version(),
            "iceberg_guard": __version__, "git": sha(), "manifest": str(args.manifest),
            "unsafe_enable_version_guessing": True,
-           "protocol": "interleaved repetitions (baseline/candidate alternate) to damp ordering bias"}
-    layouts = ["events_many_small", "events_sorted_compact"] if args.layout == "both" else [
-        {"baseline": "events_many_small", "candidate": "events_sorted_compact"}[args.layout]]
+           "protocol": "interleaved repetitions (baseline/candidate alternate) to damp ordering bias",
+           "expected_counts": {q.id: len(q.param_sets) * manifest.repetitions for q in manifest.queries},
+           "baseline": args.baseline, "candidate": args.candidate}
 
     acc = _new_acc(layouts, manifest)
     t0 = time.perf_counter()
@@ -263,42 +267,43 @@ def _latest_benchmark_records(run_dir: Path):
 def _latest_records(run_dir: Path):
     found = _latest_benchmark_records(run_dir)
     if not found:
-        return None, {}, {}, None
+        return None, {}, {}, None, {}
     latest_path, recs = found
-    data = {"events_many_small": [], "events_sorted_compact": []}
+    data: dict[str, list] = {}
     env = {}
     repetitions = None
+    expected_counts = {}
     for rec in recs:
         env = rec.get("env", env)
         repetitions = rec.get("repetitions", repetitions)
+        expected_counts = rec.get("env", {}).get("expected_counts") or expected_counts
         for layout in rec.get("results", []):
             data.setdefault(layout["layout"], []).extend(layout.get("results", []))
-    return (latest_path, env, data, repetitions)
+    return (latest_path, env, data, repetitions, expected_counts)
 
 
 def cmd_report(args) -> int:
     import json
     from . import signals
-    from .compare import compare_results
 
     found = _latest_records(Path(args.run_dir))
     if not found[0]:
         print("no run records under", args.run_dir, "— run `benchmark` first")
         return 1
-    latest, env, data, repetitions = found
+    latest, env, data, repetitions, expected_counts = found
     repetitions = repetitions or "n/a"
 
-    base_md5s = {}
-    cand_md5s = {}
-    base_p50 = {}
-    cand_p50 = {}
-    for r in data.get("events_many_small", []):
+    base_name = (env or {}).get("baseline", "events_many_small")
+    cand_name = (env or {}).get("candidate", "events_sorted_compact")
+    base_records = data.get(base_name, [])
+    cand_records = data.get(cand_name, [])
+    base_p50: dict[str, list[float]] = {}
+    cand_p50: dict[str, list[float]] = {}
+    for r in base_records:
         if r.get("status") == "ok":
-            base_md5s.setdefault(r["query_id"], []).append(r["md5"])
             base_p50.setdefault(r["query_id"], []).append(r["p50_ms"])
-    for r in data.get("events_sorted_compact", []):
+    for r in cand_records:
         if r.get("status") == "ok":
-            cand_md5s.setdefault(r["query_id"], []).append(r["md5"])
             cand_p50.setdefault(r["query_id"], []).append(r["p50_ms"])
     rewrite_records = []
     for p in sorted(Path(args.run_dir).rglob("*.jsonl")):
@@ -314,9 +319,11 @@ def cmd_report(args) -> int:
             continue
     rewrite_records = rewrite_records[-3:]
 
-    verdict = compare_results(base_md5s, cand_md5s)
+    from .compare import compare_records
+    verdict = compare_records(base_records, cand_records, repetitions if isinstance(repetitions, int) else None)
 
-    sig = {t: signals.layout_signals(args.warehouse, t) for t in ("events_many_small", "events_sorted_compact")}
+    tables = [base_name, cand_name]
+    sig = {t: signals.layout_signals(args.warehouse, t) for t in tables}
     ovl = {t: signals.predicate_overlap(signals.all_files(args.warehouse, t), "category", args.overlap_value)
            for t in sig}
 
@@ -327,20 +334,22 @@ def cmd_report(args) -> int:
     lines.append("# Sample run record — spike-basic (auto-generated)")
     lines.append("")
     lines.append(f"Generated: {latest.name} · workload: {args.manifest}")
+    lines.append(f"Comparison: baseline=`{base_name}` vs candidate=`{cand_name}`")
     if env:
         lines.append(f"Host: {env.get('host')} · python {env.get('python')} · iceberg-guard {env.get('iceberg_guard')} · git {env.get('git')}")
         lines.append("Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitations.md)")
     lines.append("")
+    lines.append("")
     lines.append("## Layout signals (measured on the filesystem — provenance: measured_filesystem)")
     lines.append("")
-    lines.append(row("signal", ["events_many_small", "events_sorted_compact"]))
+    lines.append(row("signal", [base_name, cand_name]))
     lines.append(row("---", ["---", "---"]))
     for key in ("files", "rows", "bytes_total", "mean_file_bytes", "size_cv", "many_small_files", "ts_min", "ts_max"):
-        lines.append(row(key, [sig["events_many_small"].get(key), sig["events_sorted_compact"].get(key)]))
+        lines.append(row(key, [sig[base_name].get(key), sig[cand_name].get(key)]))
     lines.append("")
     lines.append(f"## Predicate prune signal — `category = '{args.overlap_value}'` (equality, containment semantics)")
     lines.append("")
-    lines.append(row("fraction of files whose [min,max] contains the literal", [f"{ovl['events_many_small']}", f"{ovl['events_sorted_compact']}"]))
+    lines.append(row("fraction of files whose [min,max] contains the literal", [f"{ovl[base_name]}", f"{ovl[cand_name]}"]))
     lines.append("")
     lines.append("> **Signal ≠ cause.** A lower overlap means better nominal pruning for this equality predicate. It yields no performance guarantee, and neither value is a verdict.")
     lines.append("")
@@ -348,12 +357,14 @@ def cmd_report(args) -> int:
     lines.append("")
     lines.append(row("query", ["baseline digests", "candidate digests", "match"]))
     lines.append(row("---", ["---", "---", "---"]))
-    for qid, ok, detail in zip(verdict["queries"]["query_id"], verdict["queries"]["match"], verdict["queries"]["detail"]):
-        b = ", ".join(x[:8] for x in detail["baseline"]) or "—"
-        c = ", ".join(x[:8] for x in detail["candidate"]) or "—"
-        lines.append(row(qid, [b, c, "✅" if ok else "❌"]))
+    for u in verdict["queries"]["units"]:
+        b = ", ".join(x[:8] for x in (u["baseline_md5s"] or ["—"]))
+        c = ", ".join(x[:8] for x in (u["candidate_md5s"] or ["—"]))
+        lines.append(row(f"{u['query_id']} ps={u['param_set']}", [b, c, "✅" if u["match"] else "❌"]))
     lines.append(f"")
-    lines.append(f"**rowset_match: {verdict['rowset_match']}** — all provenance in run records.")
+    lines.append(f"**rowset_match: {verdict['rowset_match']}** (status: {verdict.get('status')}) — all provenance in run records.")
+    for p in verdict.get("problems", []):
+        lines.append(f"- ⚠ {p}")
     lines.append("")
     lines.append("## Indicative timing only (n small, no cache protocol — treat as signal, not benchmark)")
     lines.append("")
@@ -394,23 +405,28 @@ def cmd_report(args) -> int:
 
 
 def cmd_compare(args) -> int:
-    from .compare import compare_results
+    import json
+    from .compare import compare_records
     found = _latest_benchmark_records(Path(args.run_dir))
     if not found:
         print("no run records with benchmark results under", args.run_dir)
         return 1
     latest_path, recs = found
-    baseline: dict[str, list[str]] = {}
-    candidate: dict[str, list[str]] = {}
+    env_found = None
     for rec in recs:
+        env_found = rec.get("env", env_found)
+    base_name = (env_found or {}).get("baseline", "events_many_small")
+    cand_name = (env_found or {}).get("candidate", "events_sorted_compact")
+    base_records, cand_records, repetitions = [], [], None
+    for rec in recs:
+        repetitions = rec.get("repetitions", repetitions)
         for layout in rec.get("results", []):
-            target = baseline if layout["layout"] == "events_many_small" else candidate
-            for r in layout["results"]:
-                if r.get("status") == "ok":
-                    target.setdefault(r["query_id"], []).append(r["md5"])
-    out = compare_results(baseline, candidate)
-    print(json.dumps(out, indent=2))
+            (base_records if layout["layout"] == base_name else cand_records).extend(layout.get("results", []))
+    out = compare_records(base_records, cand_records, repetitions)
+    print(json.dumps(out, indent=2, default=str))
     print(f"source: {latest_path}")
+    if not out["rowset_match"]:
+        print("gate FAILED — comparison incomplete:", out.get("problems"))
     return 0 if out["rowset_match"] else 2
 
 
@@ -429,12 +445,14 @@ def main(argv=None) -> int:
     sp.add_argument("--cpp", action="store_true", help="also run the C++ aggregator alongside the Python path")
     sp.set_defaults(fn=cmd_inspect)
 
-    sp = sub.add_parser("benchmark", help="run the manifest workload on a layout (interleaved repetitions)")
+    sp = sub.add_parser("benchmark", help="run the manifest workload on a layout pair (interleaved repetitions)")
     sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
     sp.add_argument("--manifest", default="config/example-workload.yaml")
     sp.add_argument("--layout", choices=["baseline", "candidate", "both"], default="both")
     sp.add_argument("--run-dir", default="runs")
     sp.add_argument("--repetitions", type=int, default=None)
+    sp.add_argument("--baseline", default="events_many_small")
+    sp.add_argument("--candidate", default="events_sorted_compact")
     sp.set_defaults(fn=cmd_benchmark)
 
     sp = sub.add_parser("rewrite", help="declared intervention: sort/compact a source table into a candidate")

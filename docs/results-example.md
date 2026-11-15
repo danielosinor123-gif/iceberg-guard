@@ -1,12 +1,14 @@
 # Sample run record — spike-basic (auto-generated)
 
-Generated: 20261115T150922Z.jsonl · workload: config/example-workload.yaml
-Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git 4fc91606a1c1
+Generated: 20261115T164046Z.jsonl · workload: config/example-workload.yaml
+Comparison: baseline=`events_many_small` vs candidate=`events_intervention_sorted`
+Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git f2639aceb444
 Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitations.md)
+
 
 ## Layout signals (measured on the filesystem — provenance: measured_filesystem)
 
-| signal | events_many_small | events_sorted_compact |
+| signal | events_many_small | events_intervention_sorted |
 | --- | --- | --- |
 | files | 30 | 4 |
 | rows | 60000 | 60000 |
@@ -27,17 +29,18 @@ Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitation
 
 | query | baseline digests | candidate digests | match |
 | --- | --- | --- | --- |
-| q_all_scan | a0f583e4 | a0f583e4 | ✅ |
-| q_growth_agg | e173ec3f, f5b4e3f1 | e173ec3f, f5b4e3f1 | ✅ |
+| q_all_scan ps=0 | a0f583e4 | a0f583e4 | ✅ |
+| q_growth_agg ps=0 | e173ec3f | e173ec3f | ✅ |
+| q_growth_agg ps=1 | f5b4e3f1 | f5b4e3f1 | ✅ |
 
-**rowset_match: True** — all provenance in run records.
+**rowset_match: True** (status: ok) — all provenance in run records.
 
 ## Indicative timing only (n small, no cache protocol — treat as signal, not benchmark)
 
 | query | baseline p50 ms | candidate p50 ms |
 | --- | --- | --- |
-| q_all_scan | 11.21 | 8.73 |
-| q_growth_agg | 72.54 | 27.33 |
+| q_all_scan | 5.20 | 4.51 |
+| q_growth_agg | 48.23 | 17.29 |
 
 `q_all_scan` is the **control**: it has no layout-relevant predicate, and any timing delta here is *not* labeled an improvement.
 
@@ -45,8 +48,7 @@ Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitation
 
 | mode | elapsed_sec | rows | output_files | digest_match | sort_key |
 | --- | --- | --- | --- | --- | --- |
-| compact | 0.625 | 60000 | 4 | True | None |
-| sort | 0.713 | 60000 | 4 | True | category,ts |
+| sort | 0.509 | 60000 | 4 | True | category,ts |
 
 Digest match confirms the rewrite is row-equivalent to the source. The elapsed seconds and the differential layout properties above are the full cost evidence; converting them to a verdict requires a read-frequency profile, which this synthetic workload has none of — no amortization claim is made or implied.
 

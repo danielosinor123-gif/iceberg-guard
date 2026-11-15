@@ -14,6 +14,7 @@ Milestones 0–4 in progress. Verified (see `docs/SPIKE_RESULT.md`, `docs/result
 - DuckDB reads Iceberg tables; `iceberg-guard rewrite` performs the declared intervention and proves row-equivalence (digest match) before any comparison is honored
 - 10 interleaved repetitions; p50/p95 with dispersion; control query not labeled an improvement; report carries rewrite cost and full caveats
 - C++20 core (`src_cpp/`): `AggregateStats` streaming Welford aggregate, ASan+UBSan clean, Release build ~26M adds/s (machine-specific); Python cross-check to 1e-9 vs `statistics.pvariance`
+- Correctness gate is fail-closed (per-unit: both layouts present, status ok, samples_recorded == repetitions, digest sets equal; empty comparisons never pass); benchmark operands selectable via `--baseline/--candidate` — the committed example compares the intervention's actual output, not a pre-made twin
 - Auto-generated report (`docs/results-example.md`); `docs/BUGS.md` is a standing defect log (10+ entries)
 - 20 unit tests passing (Linux: C++ cross-check tests included); no production/capacity/vendor claims anywhere
 

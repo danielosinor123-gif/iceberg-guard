@@ -23,6 +23,11 @@ Each entry: what broke, root cause, fix, severity. Newest at top.
 - WSL `/root` checkout tags: `WSL2 kernel missing ip_tables/iso9660 modules` (custom sched_ext kernel in `.wslconfig`) — outside this repo, resolved + documented: Docker Desktop + stock kernel.
 - `uv` and Harbor installed but PATH did not include `~/.local/bin` — always extend PATH inside WSL scripts.
 
+## BUG-2026-11-15-07 — Review findings #5 and #6 (gate-integrity class)
+**#5 — The rewrite candidate did not feed the benchmark.** `rewrite` wrote a new table while `benchmark`/`compare`/`report` were hardwired to the fixture pair; a "performance comparison of the intervention" was arithmetically impossible. **Fix:** `--baseline/--candidate` are first-class benchmark arguments, the layout pair is recorded in run env, compare/report select recorded names, and the committed example now compares the intervention's output head-to-head. Not declarable as a verified comparison until then — now it is.
+
+**#6 — The correctness gate could pass vacuously.** `rowset_match` returned true when both digest maps were empty, and timeouts silently produced missing samples (status "ok" with gaps). **Fix:** rewritten `compare_records` — per (query_id, param_set) unit: both sides present, `status=ok`, `samples_recorded == repetitions`, digest sets identical; empty comparisons return `no_data`/false; gaps are named per unit. Regression tests in `test_gate.py` cover empty input, missing sides, timeouts (status), partial repetitions, digest mismatch, and per-unit naming. Demonstration: a deliberately broken manifest closes the gate with named failures. Lesson: a "match" with zero evidence is a bug wearing a check mark.
+
 ## BUG-2026-11-15-06 — M4 wiring slips (C++/Linux-only mismatch)
 1. **`# Copyright 2026` used as a C++ comment** — a plain-text search&replace propagated Python-style comments into C++ files → `invalid preprocessing directive error` at compile time. Fixed across 6 files; lesson: when sed-ing across languages, scope the pattern to the language, then rebuild and let the compiler be the referee.
 2. **Sed also matched `#` comments in `CMakeLists.txt`** (which legitimately uses `#`) and briefly rewrote them to `//`, which CMake does not recognize as comments. Restored; cmake build re-verified from scratch.
