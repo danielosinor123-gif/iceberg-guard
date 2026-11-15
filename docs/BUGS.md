@@ -23,6 +23,11 @@ Each entry: what broke, root cause, fix, severity. Newest at top.
 - WSL `/root` checkout tags: `WSL2 kernel missing ip_tables/iso9660 modules` (custom sched_ext kernel in `.wslconfig`) — outside this repo, resolved + documented: Docker Desktop + stock kernel.
 - `uv` and Harbor installed but PATH did not include `~/.local/bin` — always extend PATH inside WSL scripts.
 
+## BUG-2026-11-15-06 — M4 wiring slips (C++/Linux-only mismatch)
+1. **`# Copyright 2026` used as a C++ comment** — a plain-text search&replace propagated Python-style comments into C++ files → `invalid preprocessing directive error` at compile time. Fixed across 6 files; lesson: when sed-ing across languages, scope the pattern to the language, then rebuild and let the compiler be the referee.
+2. **Sed also matched `#` comments in `CMakeLists.txt`** (which legitimately uses `#`) and briefly rewrote them to `//`, which CMake does not recognize as comments. Restored; cmake build re-verified from scratch.
+3. **Cross-platform binary mismatch:** the committed C++ build is Linux-only; tests must not `exec` a Linux ELF on Windows. Gate is platform **and** binary existence; on other platforms the UI shows `unavailable`, never a mislabeled substitute.
+
 ## BUG-2026-11-15-05 — Four bugs found during M3 wiring (rewrite + evidence)
 1. **Data-file accumulation on re-generate:** pyiceberg `drop_table()` never removes data files; rerunning `generate` silently doubled the fixture (60 files / 120k rows) while `inspect` reported it as truth. Fix: drop catalog entry first, then `shutil.rmtree` the table dir (drop must happen first — it reads the metadata pointer). Regression test: `test_generate.py`.
 2. **Rewrite had the same accumulation pattern** — same fix applied to `rewrite --target`.

@@ -4,10 +4,14 @@
 CLI (cli.py)
   generate  → fixture.py (seeded) + pyiceberg (SQL/sqlite local warehouse) → 2 layouts
   inspect   → signals.py (filesystem + Parquet footer stats: counts, bytes, skew, overlap)
+              └─ --cpp → cpp_adapter.py → src_cpp/iceberg-guard-agg (streaming Welford aggregate)
   benchmark → workload.py (manifest) + engine_adapter.py (DuckDB iceberg_scan, watchdog interrupt)
   compare   → compare.py (disclosed 1e-9 digest, match gates timings)
   record    → report.py (append-only JSONL under runs/)
   report    → renders docs/results-example.md from the latest records (measured-vs-estimated labeled)
+C++20 core (src_cpp/)
+  aggregate.{hpp,cpp} → AggregateStats (streaming Welford)   [Linux-only; ASan/UBSan clean]
+  iceberg-guard-agg   → CLI: stdin normalized stats → one JSON line out
 ```
 
 Layers are replaceable by design: the metadata adapter knows nothing of the engine; the engine knows

@@ -17,5 +17,19 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install -e '.[dev]'
+      - name: build cpp core (for cross-check tests)
+        run: |
+          cmake -S src_cpp -B src_cpp/build -DCMAKE_BUILD_TYPE=Debug -DICEBERG_GUARD_SANITIZERS=ON
+          cmake --build src_cpp/build -j
       - name: tests
         run: uv run --no-project --with pytest --python .venv/bin/python pytest -q
+
+  cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build + sanitize + test
+        run: |
+          cmake -S src_cpp -B src_cpp/build -DCMAKE_BUILD_TYPE=Debug -DICEBERG_GUARD_SANITIZERS=ON
+          cmake --build src_cpp/build -j
+          cd src_cpp/build && ctest --output-on-failure

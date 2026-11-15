@@ -75,11 +75,27 @@ def cmd_generate(args) -> int:
 
 def cmd_inspect(args) -> int:
     from . import signals
+    all_stats = {}
     for table in ("events_many_small", "events_sorted_compact"):
         sig = signals.layout_signals(args.warehouse, table)
         ovl = signals.predicate_overlap(signals.all_files(args.warehouse, table), "category", "growth")
+        if args.cpp:
+            cpp = _cpp_aggregate(signals.all_files(args.warehouse, table))
+            if cpp:
+                sig["layout"] = {"files": cpp["files"], "rows": cpp["rows"], "bytes": cpp["bytes"],
+                                 "mean_file_bytes": cpp["mean_file_bytes"], "stdev_bytes": cpp["stdev_bytes"],
+                                 "size_cv": cpp["size_cv"], "bytes_min": cpp["bytes_min"], "bytes_max": cpp["bytes_max"],
+                                 "ts_min": cpp["ts_min"], "ts_max": cpp["ts_max"], "with_stats": cpp["with_stats"],
+                                 "provenance": cpp["provenance"]}
+            else:
+                sig["layout"] = {"error": "cpp binary not built (see docs/m4-cpp.md)", "provenance": "unavailable"}
         print({**sig, "category_eq_growth_overlap": ovl})
     return 0
+
+
+def _cpp_aggregate(file_stats_list):
+    from .cpp_adapter import run_aggregate
+    return run_aggregate(file_stats_list)
 
 
 def _new_acc(layouts, manifest: Manifest):
@@ -408,8 +424,9 @@ def main(argv=None) -> int:
     sp.add_argument("--seed", type=int, default=20261115)
     sp.set_defaults(fn=cmd_generate)
 
-    sp = sub.add_parser("inspect", help="print layout signals (measured filesystem)")
+    sp = sub.add_parser("inspect", help="print layout signals (measured filesystem, optionally via cpp core)")
     sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
+    sp.add_argument("--cpp", action="store_true", help="also run the C++ aggregator alongside the Python path")
     sp.set_defaults(fn=cmd_inspect)
 
     sp = sub.add_parser("benchmark", help="run the manifest workload on a layout (interleaved repetitions)")

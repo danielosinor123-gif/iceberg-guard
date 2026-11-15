@@ -9,3 +9,7 @@ __pycache__/
 *.egg-info/
 dist/
 .DS_Store
+
+src_cpp/build/
+
+src_cpp/build-release/
