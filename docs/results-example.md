@@ -1,8 +1,8 @@
 # Sample run record — spike-basic (auto-generated)
 
-Generated: 20261115T164046Z.jsonl · workload: config/example-workload.yaml
+Generated: 20261115T165425Z.jsonl · workload: config/example-workload.yaml
 Comparison: baseline=`events_many_small` vs candidate=`events_intervention_sorted`
-Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git f2639aceb444
+Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git 737fa95b5736
 Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitations.md)
 
 
@@ -39,16 +39,16 @@ Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitation
 
 | query | baseline p50 ms | candidate p50 ms |
 | --- | --- | --- |
-| q_all_scan | 5.20 | 4.51 |
-| q_growth_agg | 48.23 | 17.29 |
+| q_all_scan | 7.29 | 5.69 |
+| q_growth_agg | 59.68 | 21.39 |
 
 `q_all_scan` is the **control**: it has no layout-relevant predicate, and any timing delta here is *not* labeled an improvement.
 
 ## Candidate intervention — rewrite cost (declared: sort + compact)
 
-| mode | elapsed_sec | rows | output_files | digest_match | sort_key |
-| --- | --- | --- | --- | --- | --- |
-| sort | 0.509 | 60000 | 4 | True | category,ts |
+| mode | read_sec | sort_sec | write_sec | elapsed_sec (total) | rows | output_files | digest_match |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sort | 1.661 | 0.011 | 0.383 | 2.473 | 60000 | 4 | True |
 
 Digest match confirms the rewrite is row-equivalent to the source. The elapsed seconds and the differential layout properties above are the full cost evidence; converting them to a verdict requires a read-frequency profile, which this synthetic workload has none of — no amortization claim is made or implied.
 

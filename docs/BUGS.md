@@ -23,6 +23,11 @@ Each entry: what broke, root cause, fix, severity. Newest at top.
 - WSL `/root` checkout tags: `WSL2 kernel missing ip_tables/iso9660 modules` (custom sched_ext kernel in `.wslconfig`) — outside this repo, resolved + documented: Docker Desktop + stock kernel.
 - `uv` and Harbor installed but PATH did not include `~/.local/bin` — always extend PATH inside WSL scripts.
 
+## BUG-2026-11-15-08 — Review findings #4 and #5 (scope & time accounting)
+**#4 — Coverage checked only against recorded units, not the manifest's expected units.** If a (query, param_set) unit vanished from both layouts (e.g., crash before records), the gate never saw it. **Fix:** the benchmark now records `expected_units` (every manifest unit); `compare_records` takes them and requires their presence on both sides with full coverage + digest equality. Regression tests in `test_gate.py` (`test_expected_unit_absent_from_both_sides_fails` and neighbors).
+
+**#5 — rewrite timer started after read/sort.** `elapsed_sec` measured only create+write, understating the cost of the declared intervention. **Fix:** now end-to-end — `read_sec` + `sort_sec` + `write_sec` tracked separately and `elapsed_sec` covers read+sort+write+digest verify (measured: read ~1.4–1.7 s, write ~0.35–0.4 s, total ~2.2–2.6 s; the old 0.5–0.8 s figure was a narrow slice presented as the whole).
+
 ## BUG-2026-11-15-07 — Review findings #5 and #6 (gate-integrity class)
 **#5 — The rewrite candidate did not feed the benchmark.** `rewrite` wrote a new table while `benchmark`/`compare`/`report` were hardwired to the fixture pair; a "performance comparison of the intervention" was arithmetically impossible. **Fix:** `--baseline/--candidate` are first-class benchmark arguments, the layout pair is recorded in run env, compare/report select recorded names, and the committed example now compares the intervention's output head-to-head. Not declarable as a verified comparison until then — now it is.
 

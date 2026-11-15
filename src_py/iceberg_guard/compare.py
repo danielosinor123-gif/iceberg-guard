@@ -29,9 +29,12 @@ def _by_unit(records):
 
 
 def compare_records(baseline_records: list[dict], candidate_records: list[dict],
-                    repetitions: int | None = None) -> dict:
+                    repetitions: int | None = None,
+                    expected_units: list | None = None) -> dict:
     b_units, c_units = _by_unit(baseline_records), _by_unit(candidate_records)
-    units = sorted(set(b_units) | set(c_units))
+    recorded = set(b_units) | set(c_units)
+    expected = {tuple(u) for u in expected_units} if expected_units else recorded
+    units = sorted(recorded | expected)
 
     if not units:
         return {"rowset_match": False, "status": "no_data",

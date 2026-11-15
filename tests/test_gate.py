@@ -52,6 +52,28 @@ def test_digest_mismatch_fails():
     assert any("digest mismatch" in p for p in out["problems"])
 
 
+def test_expected_unit_absent_from_both_sides_fails():
+    ok = [rec("q_a", 0), rec("q_b", 0)]
+    expected = [["q_a", 0], ["q_b", 0], ["q_c", 0]]   # q_c absent on both sides
+    out = compare_records(ok, list(ok), repetitions=2, expected_units=expected)
+    assert out["rowset_match"] is False
+    problems = " ".join(out["problems"])
+    assert "q_c" in problems
+    assert "missing" in problems
+
+
+def test_expected_units_all_present_pass():
+    ok = [rec("q_a", 0), rec("q_b", 0)]
+    out = compare_records(ok, list(ok), repetitions=2, expected_units=[["q_a", 0], ["q_b", 0]])
+    assert out["rowset_match"] is True
+    assert out["status"] == "ok"
+
+
+def test_expected_units_none_falls_back_to_recorded_union():
+    out = compare_records(OK, list(OK), repetitions=2, expected_units=None)
+    assert out["rowset_match"] is True
+
+
 def test_mixed_outcomes_named():
     a = OK
     b = [rec("q_a", 0, ok=False), rec("q_a", 1), rec("q_b", 0)]

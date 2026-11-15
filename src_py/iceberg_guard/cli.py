@@ -146,15 +146,23 @@ def cmd_rewrite(args) -> int:
     """
     wh = Path(args.warehouse)
     wh_str = str(wh.resolve()).replace("\\", "/")
+    total_start = time.perf_counter()
+
+    t_read = time.perf_counter()
     cat = load_catalog("guard", **{"type": "sql",
                                     "uri": f"sqlite:///{Path(wh_str + '/catalog.db')}",
                                     "warehouse": wh_str})
     src = cat.load_table(("spike", args.source))
     df = src.scan().to_arrow().to_pandas()
     digest_src = df_md5(df.sort_values(list(df.columns)).reset_index(drop=True))
+    read_sec = time.perf_counter() - t_read
+
+    t_sort = time.perf_counter()
     if args.mode == "sort":
         key = [c.strip() for c in args.sort_key.split(",")]
         df = df.sort_values(key).reset_index(drop=True)
+    sort_sec = time.perf_counter() - t_sort
+
     batches = int(args.batches)
     pschema = _schema()
     ident = ("spike", args.target)
@@ -162,14 +170,16 @@ def cmd_rewrite(args) -> int:
         cat.drop_table(ident)   # must happen before removing files — drop reads the metadata pointer
     import shutil
     shutil.rmtree(wh / "spike" / args.target, ignore_errors=True)
-    t0 = time.perf_counter()
+    t_write = time.perf_counter()
     tbl = cat.create_table(ident, schema=pschema)
     with tbl.transaction() as tx:
         for b in _split_df(df, batches):
             tx.append(pa.Table.from_pandas(b, schema=pschema, preserve_index=False))
-    elapsed = time.perf_counter() - t0
+    write_sec = time.perf_counter() - t_write
+
     out_df = cat.load_table(ident).scan().to_arrow().to_pandas()
     digest_out = df_md5(out_df.sort_values(list(out_df.columns)).reset_index(drop=True))
+    elapsed = time.perf_counter() - total_start   # truly end-to-end: read + sort + write + verify
     out = {
         "type": "rewrite",
         "mode": args.mode,
@@ -178,6 +188,9 @@ def cmd_rewrite(args) -> int:
         "sort_key": args.sort_key if args.mode == "sort" else None,
         "batches": batches,
         "rows": int(len(df)),
+        "read_sec": round(read_sec, 3),
+        "sort_sec": round(sort_sec, 3),
+        "write_sec": round(write_sec, 3),
         "elapsed_sec": round(elapsed, 3),
         "digest_match": bool(digest_src == digest_out),
         "digest_source": digest_src,
@@ -208,6 +221,7 @@ def cmd_benchmark(args) -> int:
            "unsafe_enable_version_guessing": True,
            "protocol": "interleaved repetitions (baseline/candidate alternate) to damp ordering bias",
            "expected_counts": {q.id: len(q.param_sets) * manifest.repetitions for q in manifest.queries},
+           "expected_units": [[q.id, j] for q in manifest.queries for j, _ in enumerate(q.param_sets)],
            "baseline": args.baseline, "candidate": args.candidate}
 
     acc = _new_acc(layouts, manifest)
@@ -320,7 +334,8 @@ def cmd_report(args) -> int:
     rewrite_records = rewrite_records[-3:]
 
     from .compare import compare_records
-    verdict = compare_records(base_records, cand_records, repetitions if isinstance(repetitions, int) else None)
+    expected_units = (env or {}).get("expected_units")
+    verdict = compare_records(base_records, cand_records, repetitions if isinstance(repetitions, int) else None, expected_units)
 
     tables = [base_name, cand_name]
     sig = {t: signals.layout_signals(args.warehouse, t) for t in tables}
@@ -380,12 +395,13 @@ def cmd_report(args) -> int:
     lines.append("## Candidate intervention — rewrite cost (declared: sort + compact)")
     lines.append("")
     if rewrite_records:
-        lines.append(row("mode", ["elapsed_sec", "rows", "output_files", "digest_match", "sort_key"]))
-        lines.append(row("---", ["---", "---", "---", "---", "---"]))
+        lines.append(row("mode", ["read_sec", "sort_sec", "write_sec", "elapsed_sec (total)", "rows", "output_files", "digest_match"]))
+        lines.append(row("---", ["---", "---", "---", "---", "---", "---", "---"]))
         for rec in rewrite_records:
-            lines.append(row(rec.get("mode"), [rec.get("elapsed_sec"), rec.get("rows"),
-                                                  rec.get("output_files"), rec.get("digest_match"),
-                                                  rec.get("sort_key")]))
+            lines.append(row(rec.get("mode"), [rec.get("read_sec", "—"), rec.get("sort_sec", "—"),
+                                                  rec.get("write_sec", "—"), rec.get("elapsed_sec"),
+                                                  rec.get("rows"), rec.get("output_files"),
+                                                  rec.get("digest_match")]))
         lines.append("")
         lines.append("Digest match confirms the rewrite is row-equivalent to the source. The elapsed seconds and the differential layout properties above are the full cost evidence; converting them to a verdict requires a read-frequency profile, which this synthetic workload has none of — no amortization claim is made or implied.")
     else:
@@ -417,12 +433,13 @@ def cmd_compare(args) -> int:
         env_found = rec.get("env", env_found)
     base_name = (env_found or {}).get("baseline", "events_many_small")
     cand_name = (env_found or {}).get("candidate", "events_sorted_compact")
+    expected_units = (env_found or {}).get("expected_units")
     base_records, cand_records, repetitions = [], [], None
     for rec in recs:
         repetitions = rec.get("repetitions", repetitions)
         for layout in rec.get("results", []):
             (base_records if layout["layout"] == base_name else cand_records).extend(layout.get("results", []))
-    out = compare_records(base_records, cand_records, repetitions)
+    out = compare_records(base_records, cand_records, repetitions, expected_units)
     print(json.dumps(out, indent=2, default=str))
     print(f"source: {latest_path}")
     if not out["rowset_match"]:
