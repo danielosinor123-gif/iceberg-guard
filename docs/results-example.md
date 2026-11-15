@@ -1,7 +1,7 @@
 # Sample run record — spike-basic (auto-generated)
 
-Generated: 20261115T145640Z.jsonl · workload: config/example-workload.yaml
-Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git b24aaa311a34
+Generated: 20261115T150922Z.jsonl · workload: config/example-workload.yaml
+Host: Windows-11-10.0.26200-SP0 · python 3.12.16 · iceberg-guard 0.1.0 · git 4fc91606a1c1
 Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitations.md)
 
 ## Layout signals (measured on the filesystem — provenance: measured_filesystem)
@@ -36,13 +36,22 @@ Engine protocol flag: `unsafe_enable_version_guessing=true` (see docs/limitation
 
 | query | baseline p50 ms | candidate p50 ms |
 | --- | --- | --- |
-| q_all_scan | 6.33 | 4.76 |
-| q_growth_agg | 70.48 | 24.82 |
+| q_all_scan | 11.21 | 8.73 |
+| q_growth_agg | 72.54 | 27.33 |
 
 `q_all_scan` is the **control**: it has no layout-relevant predicate, and any timing delta here is *not* labeled an improvement.
 
+## Candidate intervention — rewrite cost (declared: sort + compact)
+
+| mode | elapsed_sec | rows | output_files | digest_match | sort_key |
+| --- | --- | --- | --- | --- | --- |
+| compact | 0.625 | 60000 | 4 | True | None |
+| sort | 0.713 | 60000 | 4 | True | category,ts |
+
+Digest match confirms the rewrite is row-equivalent to the source. The elapsed seconds and the differential layout properties above are the full cost evidence; converting them to a verdict requires a read-frequency profile, which this synthetic workload has none of — no amortization claim is made or implied.
+
 ## What this does NOT show
 
-- No benefit claim for any candidate. Three repetitions, local hardware, no cold-cache protocol.
+- A fixed repetition count (10) on local hardware; no cold-cache protocol.
 - No Firebolt, production, capacity, or cost claim. DuckDB/PyIceberg local numbers for synthetic data stay local.
 - No claim about partitioning or multi-query workloads; both need later milestones.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import json
 import platform
 import subprocess
 import time
@@ -16,6 +17,7 @@ from pyiceberg.catalog import load_catalog
 
 from . import __version__, fixture
 from .engine_adapter import EngineError, connect, run_query, result_md5
+from .fixture import df_md5
 from .workload import ManifestError, load_manifest, Manifest
 from .report import record as append_record
 
@@ -55,11 +57,14 @@ def cmd_generate(args) -> int:
         pass  # namespace already exists
     df = fixture.make_events(rows=args.rows, seed=args.seed)
     pschema = _schema()
+    import shutil
     for name, batches in (("events_many_small", _split_df(df, 30)),
                           ("events_sorted_compact", _split_df(df.sort_values(["category", "ts"]).reset_index(drop=True), 4))):
         ident = ("spike", name)
         if cat.table_exists(ident):
-            cat.drop_table(ident)
+            cat.drop_table(ident)   # must happen before removing files — drop reads the metadata pointer
+        import shutil
+        shutil.rmtree(wh / "spike" / name, ignore_errors=True)   # sweep orphaned parquet files left by drop_table
         t = cat.create_table(ident, schema=pschema)
         with t.transaction() as tx:
             for b in batches:
@@ -77,41 +82,35 @@ def cmd_inspect(args) -> int:
     return 0
 
 
-def _benchmark_one(con, manifest: Manifest, table_meta: str, layout: str):
-    out = []
-    for q in manifest.queries:
-        for j, params in enumerate(q.param_sets):
-            rendered = q.render(params)
-            sql = rendered.replace("FROM t", f"FROM iceberg_scan('{table_meta}')")
-            samples = []
-            md5s = []
-            status = "ok"
-            for _ in range(manifest.repetitions):
-                try:
-                    df, elapsed, st = run_query(con, sql, manifest.timeout_sec)
-                except EngineError as e:
-                    status, df, elapsed, st = "error", None, 0.0, "error"
-                    out.append({"query_id": q.id, "param_set": j, "params": params,
-                                "status": status, "error": str(e)[:300]})
-                    break
-                if st == "timed_out":
-                    status = "timed_out"
-                    continue
-                samples.append(elapsed)
-                md5s.append(result_md5(df, q.order_sensitive))
-            if status == "ok":
-                samples.sort()
-                n = len(samples)
-                out.append({"query_id": q.id, "param_set": j, "params": params,
-                            "status": "ok",
-                            "rowcount": int(df.shape[0]),
-                            "md5": md5s[-1],
-                            "unique_md5s": sorted(set(md5s)),
-                            "samples_ms": [round(s * 1000, 3) for s in samples],
-                            "p50_ms": round(samples[n // 2] * 1000, 3),
-                            "p95_ms": round(samples[min(n - 1, int(n * 0.95))] * 1000, 3)})
-            elif status == "timed_out":
-                out.append({"query_id": q.id, "param_set": j, "params": params, "status": status})
+def _new_acc(layouts, manifest: Manifest):
+    acc = {}
+    for t in layouts:
+        for q in manifest.queries:
+            for j, params in enumerate(q.param_sets):
+                acc[(t, q.id, j)] = {"params": params, "samples": [], "digests": [],
+                                     "rowcount": None, "status": "ok", "error": None}
+    return acc
+
+
+def _finalize(acc):
+    out: dict[str, list] = {}
+    for (table, qid, j), st in acc.items():
+        rec = {"query_id": qid, "param_set": j, "params": st["params"], "status": st["status"]}
+        out.setdefault(table, []).append(rec)
+        if st["status"] == "ok":
+            samples = sorted(st["samples"])
+            n = len(samples)
+            digests = st["digests"]
+            rec.update({"rowcount": st["rowcount"],
+                        "md5": digests[-1],
+                        "unique_md5s": sorted(set(digests)),
+                        "samples_ms": [round(s * 1000, 3) for s in samples],
+                        "p50_ms": round(samples[n // 2] * 1000, 3),
+                        "p95_ms": round(samples[min(n - 1, int(n * 0.95))] * 1000, 3)})
+        elif st.get("error"):
+            rec["error"] = st["error"]
+    for table in out:
+        out[table].sort(key=lambda r: (r["query_id"], r["param_set"]))
     return out
 
 
@@ -122,42 +121,143 @@ def _meta_json(warehouse: Path, table_name: str) -> Path:
     return metas[-1]
 
 
+def cmd_rewrite(args) -> int:
+    """The declared candidate intervention, timed end-to-end.
+
+    mode=sort   — read source, stable sort by --sort-key, rewrite into fewer batches (compaction)
+    mode=compact — no reordering, only fewer batches (isolates file-size effect from sort effect)
+    """
+    wh = Path(args.warehouse)
+    wh_str = str(wh.resolve()).replace("\\", "/")
+    cat = load_catalog("guard", **{"type": "sql",
+                                    "uri": f"sqlite:///{Path(wh_str + '/catalog.db')}",
+                                    "warehouse": wh_str})
+    src = cat.load_table(("spike", args.source))
+    df = src.scan().to_arrow().to_pandas()
+    digest_src = df_md5(df.sort_values(list(df.columns)).reset_index(drop=True))
+    if args.mode == "sort":
+        key = [c.strip() for c in args.sort_key.split(",")]
+        df = df.sort_values(key).reset_index(drop=True)
+    batches = int(args.batches)
+    pschema = _schema()
+    ident = ("spike", args.target)
+    if cat.table_exists(ident):
+        cat.drop_table(ident)   # must happen before removing files — drop reads the metadata pointer
+    import shutil
+    shutil.rmtree(wh / "spike" / args.target, ignore_errors=True)
+    t0 = time.perf_counter()
+    tbl = cat.create_table(ident, schema=pschema)
+    with tbl.transaction() as tx:
+        for b in _split_df(df, batches):
+            tx.append(pa.Table.from_pandas(b, schema=pschema, preserve_index=False))
+    elapsed = time.perf_counter() - t0
+    out_df = cat.load_table(ident).scan().to_arrow().to_pandas()
+    digest_out = df_md5(out_df.sort_values(list(out_df.columns)).reset_index(drop=True))
+    out = {
+        "type": "rewrite",
+        "mode": args.mode,
+        "source": args.source,
+        "target": args.target,
+        "sort_key": args.sort_key if args.mode == "sort" else None,
+        "batches": batches,
+        "rows": int(len(df)),
+        "elapsed_sec": round(elapsed, 3),
+        "digest_match": bool(digest_src == digest_out),
+        "digest_source": digest_src,
+        "digest_output": digest_out,
+    }
+    out_files = len(list((wh / "spike" / args.target).rglob("*.parquet")))
+    out["output_files"] = out_files
+    run_dir = Path(args.run_dir) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    record = append_record(run_dir, out)
+    print(json.dumps(out, indent=2))
+    print("record:", record)
+    return 0
+
+
 def cmd_benchmark(args) -> int:
     manifest = load_manifest(args.manifest)
+    if args.repetitions is not None:
+        manifest.repetitions = args.repetitions
     warehouse = Path(args.warehouse)
     run_dir = Path(args.run_dir) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     meta = {t: _meta_json(warehouse, t) for t in ("events_many_small", "events_sorted_compact")}
     con = connect()
-    results = []
     env = {"host": platform.platform(), "python": platform.python_version(),
            "iceberg_guard": __version__, "git": sha(), "manifest": str(args.manifest),
-           "unsafe_enable_version_guessing": True}
+           "unsafe_enable_version_guessing": True,
+           "protocol": "interleaved repetitions (baseline/candidate alternate) to damp ordering bias"}
     layouts = ["events_many_small", "events_sorted_compact"] if args.layout == "both" else [
         {"baseline": "events_many_small", "candidate": "events_sorted_compact"}[args.layout]]
-    for table in layouts:
-        t0 = time.perf_counter()
-        rows = _benchmark_one(con, manifest, str(meta[table]), table)
-        results.append({"layout": table, "results": rows, "elapsed_sec": round(time.perf_counter() - t0, 3)})
-    record = append_record(run_dir, {"env": env, "workload": manifest.name, "results": results})
+
+    acc = _new_acc(layouts, manifest)
+    t0 = time.perf_counter()
+    for _ in range(manifest.repetitions):
+        for q in manifest.queries:
+            for j, params in enumerate(q.param_sets):
+                sql_by_layout = {t: q.render(params).replace(
+                    "FROM t", f"FROM iceberg_scan('{meta[t]}')") for t in layouts}
+                for t in layouts:
+                    key = (t, q.id, j)
+                    try:
+                        df, elapsed, st = run_query(con, sql_by_layout[t], manifest.timeout_sec)
+                    except EngineError as e:
+                        acc[key]["status"] = "error"
+                        acc[key]["error"] = str(e)[:300]
+                        continue
+                    if st == "timed_out":
+                        acc[key]["status"] = "timed_out"
+                        continue
+                    acc[key]["samples"].append(elapsed)
+                    acc[key]["digests"].append(result_md5(df, q.order_sensitive))
+                    acc[key]["rowcount"] = int(df.shape[0])
+
+    final = _finalize(acc)
+    results = [{"layout": t, "results": final.get(t, []),
+                "elapsed_sec": round(time.perf_counter() - t0, 3)} for t in layouts]
+    record = append_record(run_dir, {"env": env, "workload": manifest.name,
+                                     "repetitions": manifest.repetitions,
+                                     "results": results})
     print("records written:", record)
     return 0
 
 
-def _latest_records(run_dir: Path):
+def _iter_records(run_dir: Path):
     import json
-    runs = sorted(run_dir.rglob("*.jsonl"))
-    if not runs:
-        return None, {}
-    latest = runs[-1]
+    for p in sorted(run_dir.rglob("*.jsonl")):
+        try:
+            for line in p.open(encoding="utf-8"):
+                try:
+                    yield p, json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            continue
+
+
+def _latest_benchmark_records(run_dir: Path):
+    """Latest record(s) that actually contain benchmark results — NOT every record (rewrite records have none)."""
+    benchmark = [(p, rec) for p, rec in _iter_records(run_dir) if rec.get("results")]
+    if not benchmark:
+        return None
+    latest_path = max(p for p, _ in benchmark)
+    return latest_path, [rec for p, rec in benchmark if p == latest_path]
+
+
+def _latest_records(run_dir: Path):
+    found = _latest_benchmark_records(run_dir)
+    if not found:
+        return None, {}, {}, None
+    latest_path, recs = found
     data = {"events_many_small": [], "events_sorted_compact": []}
     env = {}
-    with latest.open(encoding="utf-8") as fh:
-        for line in fh:
-            rec = json.loads(line)
-            env = rec.get("env", env)
-            for layout in rec.get("results", []):
-                data.setdefault(layout["layout"], []).extend(layout.get("results", []))
-    return (latest, env, data)
+    repetitions = None
+    for rec in recs:
+        env = rec.get("env", env)
+        repetitions = rec.get("repetitions", repetitions)
+        for layout in rec.get("results", []):
+            data.setdefault(layout["layout"], []).extend(layout.get("results", []))
+    return (latest_path, env, data, repetitions)
 
 
 def cmd_report(args) -> int:
@@ -169,7 +269,8 @@ def cmd_report(args) -> int:
     if not found[0]:
         print("no run records under", args.run_dir, "— run `benchmark` first")
         return 1
-    latest, env, data = found
+    latest, env, data, repetitions = found
+    repetitions = repetitions or "n/a"
 
     base_md5s = {}
     cand_md5s = {}
@@ -183,6 +284,20 @@ def cmd_report(args) -> int:
         if r.get("status") == "ok":
             cand_md5s.setdefault(r["query_id"], []).append(r["md5"])
             cand_p50.setdefault(r["query_id"], []).append(r["p50_ms"])
+    rewrite_records = []
+    for p in sorted(Path(args.run_dir).rglob("*.jsonl")):
+        try:
+            for line in p.open(encoding="utf-8"):
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "rewrite":
+                    rewrite_records.append(rec)
+        except OSError:
+            continue
+    rewrite_records = rewrite_records[-3:]
+
     verdict = compare_results(base_md5s, cand_md5s)
 
     sig = {t: signals.layout_signals(args.warehouse, t) for t in ("events_many_small", "events_sorted_compact")}
@@ -235,9 +350,23 @@ def cmd_report(args) -> int:
     lines.append("")
     lines.append("`q_all_scan` is the **control**: it has no layout-relevant predicate, and any timing delta here is *not* labeled an improvement.")
     lines.append("")
+    lines.append("## Candidate intervention — rewrite cost (declared: sort + compact)")
+    lines.append("")
+    if rewrite_records:
+        lines.append(row("mode", ["elapsed_sec", "rows", "output_files", "digest_match", "sort_key"]))
+        lines.append(row("---", ["---", "---", "---", "---", "---"]))
+        for rec in rewrite_records:
+            lines.append(row(rec.get("mode"), [rec.get("elapsed_sec"), rec.get("rows"),
+                                                  rec.get("output_files"), rec.get("digest_match"),
+                                                  rec.get("sort_key")]))
+        lines.append("")
+        lines.append("Digest match confirms the rewrite is row-equivalent to the source. The elapsed seconds and the differential layout properties above are the full cost evidence; converting them to a verdict requires a read-frequency profile, which this synthetic workload has none of — no amortization claim is made or implied.")
+    else:
+        lines.append("No rewrite records in run-dir — run `iceberg-guard rewrite --mode sort` first.")
+    lines.append("")
     lines.append("## What this does NOT show")
     lines.append("")
-    lines.append("- No benefit claim for any candidate. Three repetitions, local hardware, no cold-cache protocol.")
+    lines.append(f"- A fixed repetition count ({repetitions}) on local hardware; no cold-cache protocol.")
     lines.append("- No Firebolt, production, capacity, or cost claim. DuckDB/PyIceberg local numbers for synthetic data stay local.")
     lines.append("- No claim about partitioning or multi-query workloads; both need later milestones.")
 
@@ -250,25 +379,22 @@ def cmd_report(args) -> int:
 
 def cmd_compare(args) -> int:
     from .compare import compare_results
-    import json
-    runs = sorted(Path(args.run_dir).rglob("*.jsonl"))
-    if not runs:
-        print("no run records under", args.run_dir)
+    found = _latest_benchmark_records(Path(args.run_dir))
+    if not found:
+        print("no run records with benchmark results under", args.run_dir)
         return 1
-    latest = runs[-1]
+    latest_path, recs = found
     baseline: dict[str, list[str]] = {}
     candidate: dict[str, list[str]] = {}
-    with latest.open(encoding="utf-8") as fh:
-        for line in fh:
-            rec = json.loads(line)
-            for layout in rec.get("results", []):
-                target = baseline if layout["layout"] == "events_many_small" else candidate
-                for r in layout["results"]:
-                    if r.get("status") == "ok":
-                        target.setdefault(r["query_id"], []).append(r["md5"])
+    for rec in recs:
+        for layout in rec.get("results", []):
+            target = baseline if layout["layout"] == "events_many_small" else candidate
+            for r in layout["results"]:
+                if r.get("status") == "ok":
+                    target.setdefault(r["query_id"], []).append(r["md5"])
     out = compare_results(baseline, candidate)
     print(json.dumps(out, indent=2))
-    print(f"source: {latest}")
+    print(f"source: {latest_path}")
     return 0 if out["rowset_match"] else 2
 
 
@@ -286,12 +412,23 @@ def main(argv=None) -> int:
     sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
     sp.set_defaults(fn=cmd_inspect)
 
-    sp = sub.add_parser("benchmark", help="run the manifest workload on a layout")
+    sp = sub.add_parser("benchmark", help="run the manifest workload on a layout (interleaved repetitions)")
     sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
     sp.add_argument("--manifest", default="config/example-workload.yaml")
     sp.add_argument("--layout", choices=["baseline", "candidate", "both"], default="both")
     sp.add_argument("--run-dir", default="runs")
+    sp.add_argument("--repetitions", type=int, default=None)
     sp.set_defaults(fn=cmd_benchmark)
+
+    sp = sub.add_parser("rewrite", help="declared intervention: sort/compact a source table into a candidate")
+    sp.add_argument("--warehouse", default=DEFAULT_WAREHOUSE)
+    sp.add_argument("--source", default="events_many_small")
+    sp.add_argument("--target", default="events_intervention")
+    sp.add_argument("--mode", choices=["sort", "compact"], default="sort")
+    sp.add_argument("--sort-key", default="category,ts")
+    sp.add_argument("--batches", type=int, default=4)
+    sp.add_argument("--run-dir", default="runs")
+    sp.set_defaults(fn=cmd_rewrite)
 
     sp = sub.add_parser("compare", help="verify result equivalence from the latest run records")
     sp.add_argument("--run-dir", default="runs")

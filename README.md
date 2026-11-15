@@ -8,14 +8,13 @@
 
 ## Status (2026-11-15)
 
-Milestone 2 in progress. Verified so far (see `docs/SPIKE_RESULT.md`, `docs/results-example.md`):
+Milestones 0–3 in progress. Verified (see `docs/SPIKE_RESULT.md`, `docs/results-example.md`):
 
-- Deterministic synthetic fixture roundtrip through Iceberg (30 small files vs 4 sorted large files)
-- Exact rowset equivalence proven (disclosed 1e-9 float digest normalization)
-- DuckDB reads the Iceberg tables; PyIceberg sqlite catalog works with no service
-- Layout signals computed from measured filesystem + Parquet footers; correctness gate passes; control case (`q_all_scan`) not labeled an improvement
-- Auto-generated evidence report: `docs/results-example.md` (regenerate with `iceberg-guard report`)
-- `docs/BUGS.md` tracks every defect found, with root cause + lesson
+- Deterministic fixture, 2 layouts, exact rowset equivalence (disclosed 1e-9 float digest normalization)
+- DuckDB reads Iceberg tables; `iceberg-guard rewrite` performs the declared intervention and proves row-equivalence (digest match) before any comparison is honored
+- 10 interleaved repetitions (baseline/candidate alternate); p50/p95 are recorded with dispersion; control query not labeled an improvement
+- Auto-generated report (`docs/results-example.md`) carries measured-vs-indicative labels; `docs/BUGS.md` is a standing defect log
+- 19 unit tests passing; no production/capacity/vendor claims anywhere
 
 ## Quickstart (target: Linux; works on Windows/WSL too)
 

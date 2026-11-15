@@ -23,6 +23,12 @@ Each entry: what broke, root cause, fix, severity. Newest at top.
 - WSL `/root` checkout tags: `WSL2 kernel missing ip_tables/iso9660 modules` (custom sched_ext kernel in `.wslconfig`) — outside this repo, resolved + documented: Docker Desktop + stock kernel.
 - `uv` and Harbor installed but PATH did not include `~/.local/bin` — always extend PATH inside WSL scripts.
 
+## BUG-2026-11-15-05 — Four bugs found during M3 wiring (rewrite + evidence)
+1. **Data-file accumulation on re-generate:** pyiceberg `drop_table()` never removes data files; rerunning `generate` silently doubled the fixture (60 files / 120k rows) while `inspect` reported it as truth. Fix: drop catalog entry first, then `shutil.rmtree` the table dir (drop must happen first — it reads the metadata pointer). Regression test: `test_generate.py`.
+2. **Rewrite had the same accumulation pattern** — same fix applied to `rewrite --target`.
+3. **`report`/`compare` picked the wrong record:** `rglob` sorted filenames and took the absolute latest `*.jsonl`, which after a `rewrite` run is a rewrite-only record → empty comparison tables and a **vacuous `rowset_match: true`**. Certification code must not be vacuous. Fix: `_latest_benchmark_records()` selects only records containing benchmark `results`. Lesson: "rowset_match: true" on empty inputs is a *bug*, not a pass.
+4. **Minor:** report's static "Three repetitions" text became a stale claim once repetitions were configurable — now parameterized from the record.
+
 ## BUG-2026-11-15-04 — Two bugs found during M2 wiring (signals)
 1. `FileMetaData.row_groups` attribute **does not exist** in pyarrow → correct API is `md.row_group(i)` looping `md.num_row_groups`; direct attribute access raised `AttributeError` and signals silently fell back to `None` (test caught it: `predicate_overlap` returned `None` where overlap existed).
 2. Categorical min/max stats can arrive as **bytes**; `str()` produced `"b'growth'..."` and would have failed containment for string predicates. Fixed with `_decode()` (bytes→utf-8), verified by tests.
